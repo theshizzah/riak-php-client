@@ -451,79 +451,7 @@ class RiakObject {
    * @return $this
    */
   function store($w=NULL, $dw=NULL) {
-    # Use defaults if not specified...
-    $w = $this->bucket->getW($w);
-    $dw = $this->bucket->getDW($w);
-
-    # Construct the URL...
-    $params = array('returnbody' => 'true', 'w' => $w, 'dw' => $dw);
-    $url = RiakUtils::buildRestPath($this->client, $this->bucket, $this->key, NULL, $params);
-    
-    # Construct the headers...
-    $headers = array('Accept: text/plain, */*; q=0.5',
-                     'Content-Type: ' . $this->getContentType(),
-                     'X-Riak-ClientId: ' . $this->client->getClientID());
-
-    # Add the vclock if it exists...
-    if ($this->vclock() != NULL) {
-      $headers[] = 'X-Riak-Vclock: ' . $this->vclock();
-    }
-
-    # Add the Links...
-    foreach ($this->links as $link) {
-      $headers[] = 'Link: ' . $link->toLinkHeader($this->client);
-    }
-
-    # Add the auto indexes...
-    $collisions = array();
-    if(!empty($this->autoIndexes) && !is_array($this->data)) {
-      throw new Exception('Unsupported data type for auto indexing feature.  Object must be an array to use auto indexes.');
-    }
-    foreach($this->autoIndexes as $index=>$fieldName) {
-      $value = null;
-      // look up the value
-      if (isset($this->data[$fieldName])) {
-        $value = $this->data[$fieldName];
-        $headers[] = "x-riak-index-$index: ".urlencode($value);
-        
-        // look for value collisions with normal indexes
-        if (isset($this->indexes[$index])) {
-          if (false !== array_search($value, $this->indexes[$index])) {
-            $collisions[$index] = $value;
-          }
-        }
-      }
-    }
-    count($this->autoIndexes) > 0
-      ? $this->meta['x-rc-autoindex'] = json_encode($this->autoIndexes)
-      : $this->meta['x-rc-autoindex'] = null;
-    count($collisions) > 0
-      ? $this->meta['x-rc-autoindexcollision'] = json_encode($collisions)
-      : $this->meta['x-rc-autoindexcollision'] = null;
-    
-    # Add the indexes
-    foreach ($this->indexes as $index=>$values) {
-      $headers[] = "x-riak-index-$index: " . join(', ', array_map('urlencode', $values));
-    }
-    
-    
-    # Add the metadata...
-    foreach($this->meta as $metaName=>$metaValue) {
-      if ($metaValue !== null) $headers[] = "X-Riak-Meta-$metaName: $metaValue";
-    }
-
-    if ($this->jsonize) {
-      $content = json_encode($this->getData());
-    } else {
-      $content = $this->getData();
-    }
-  
-    $method = $this->key ? 'PUT' : 'POST';
-
-    # Run the operation.
-    $response = RiakUtils::httpRequest($method, $url, $headers, $content);
-    $this->populate($response, array(200, 201, 300));
-    return $this;
+    return $this->client->backend->storeObject($this, $w, $dw);
   }
  
   /**
@@ -593,12 +521,36 @@ class RiakObject {
    * Get the vclock of this object.
    * @return string
    */
-  private function vclock() {
+  public function vclock() {
     if (array_key_exists('x-riak-vclock', $this->headers)) {
       return $this->headers['x-riak-vclock'];
     } else {
       return NULL;
     }
+  }
+
+  /**
+   * Get the autoindexes of this object.
+   * @return string
+   */
+  public function autoIndexes(){
+    return $this->autoIndexes; 
+  }
+  
+  /**
+   * Get the metadata of this object.
+   * @return string
+   */
+  public function meta(){
+    return $this->meta; 
+  }
+  
+  /**
+   * Get the indexes of this object.
+   * @return string
+   */
+  public function indexes(){
+    return $this->indexes; 
   }
 
   /**

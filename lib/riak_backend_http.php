@@ -47,6 +47,85 @@ class RiakBackendHTTP implements RiakBackendInterface {
 
     return $props;
   }
+
+  public function storeObject($object, $w, $dw){
+    # Use defaults if not specified...
+    $w = $object->bucket->getW($w);
+    $dw = $object->bucket->getDW($w);
+
+    # Construct the URL...
+    $params = array('returnbody' => 'true', 'w' => $w, 'dw' => $dw);
+    $url = self::buildRestPath($this, $object->bucket, $object->key, NULL, $params);
+    
+    # Construct the headers...
+    $headers = array('Accept: text/plain, */*; q=0.5',
+                     'Content-Type: ' . $object->getContentType(),
+                     'X-Riak-ClientId: ' . $object->client->getClientID());
+
+    # Add the vclock if it exists...
+    if ($object->vclock() != NULL) {
+      $headers[] = 'X-Riak-Vclock: ' . $object->vclock();
+    }
+
+    # Add the Links...
+    foreach ($object->links as $link) {
+      $headers[] = 'Link: ' . $link->toLinkHeader($this);
+    }
+
+    # Add the auto indexes...
+    $collisions = array();
+    if(!empty($object->autoIndexes) && !is_array($object->data)) {
+      throw new Exception('Unsupported data type for auto indexing feature.  Object must be an array to use auto indexes.');
+    }
+    foreach($object->autoIndexes() as $index=>$fieldName) {
+      $value = null;
+      // look up the value
+      if (isset($object->data[$fieldName])) {
+        $value = $object->data[$fieldName];
+        $headers[] = "x-riak-index-$index: ".urlencode($value);
+        
+        // look for value collisions with normal indexes
+        $indexes = $object->indexes();
+        if (isset($indexes[$index])) {
+          if (false !== array_search($value, $indexes[$index])) {
+            $collisions[$index] = $value;
+          }
+        }
+      }
+    }
+
+    $meta = $object->meta();
+    count($object->autoIndexes()) > 0
+      ? $meta['x-rc-autoindex'] = json_encode($object->autoIndexes())
+      : $meta['x-rc-autoindex'] = null;
+    count($collisions) > 0
+      ? $meta['x-rc-autoindexcollision'] = json_encode($collisions)
+      : $meta['x-rc-autoindexcollision'] = null;
+    
+    # Add the indexes
+    foreach ($object->indexes() as $index=>$values) {
+      $headers[] = "x-riak-index-$index: " . join(', ', array_map('urlencode', $values));
+    }
+    
+    
+    # Add the metadata...
+    foreach($object->meta() as $metaName=>$metaValue) {
+      if ($metaValue !== null) $headers[] = "X-Riak-Meta-$metaName: $metaValue";
+    }
+
+    if ($object->jsonize) {
+      $content = json_encode($object->getData());
+    } else {
+      $content = $object->getData();
+    }
+  
+    $method = $object->key ? 'PUT' : 'POST';
+
+    # Run the operation.
+    $response = self::httpRequest($method, $url, $headers, $content);
+    $object->populate($response, array(200, 201, 300));
+    return $object;
+  }
   
   /**
    * Given a RiakClient, RiakBucket, Key, LinkSpec, and Params,
