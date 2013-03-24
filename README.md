@@ -1,5 +1,3 @@
-<img src="http://docs.basho.com/shared/1.2.1/images/riak-logo.png">
-
 ### OVERVIEW 
 My fork of Basho's PHP client for Riak with additional features added. 
 
