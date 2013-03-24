@@ -1,5 +1,5 @@
 ### OVERVIEW 
-My fork of Basho's PHP client for Riak with additional features added. 
+My fork of Basho's PHP client for Riak with additional features added. Still a work in progress, but making improvements at a quick pace. See Changelog/TODOs to see what's still in development.
 
 ### DESCRIPTION 
 While Basho's PHP client is a great starting point for using Riak, I found it lacking in several key ways:
