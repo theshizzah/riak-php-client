@@ -10,7 +10,7 @@ While Basho's PHP client is a great starting point for using Riak, I found it la
   * only connects to a single Riak host
   * tight coupling between Riak object/bucket classes and REST API
   * unit tests have no setup/teardown phases, prone to fail due to state left around by previous failed tests
-  * no support for new [riak_dt](https://github.com/basho/riak_dt) CRDT
+  * no support for new [riak_dt](https://github.com/basho/riak_dt) CRDTs
 
 ### Changelog 
   * created interface RiakBackendInterface (`lib/riak_backend_interface.php`)  to define required interface for the REST and (forthcoming) PBC backends
@@ -23,8 +23,9 @@ While Basho's PHP client is a great starting point for using Riak, I found it la
 
 ### TODOs 
   * refactor REST API-specific code into RiakBackendHTTP
+  * implement PBC API backend in RiakBackendPBC
   * reorganize `unit_tests.php` into a PHPUnit test suite
-  * 
+  * support fo Riak CRDTs
 
 ### Official Riak PHP Client 
 The original PHP client, and documentation on usage, can be found at
