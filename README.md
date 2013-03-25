@@ -18,9 +18,9 @@ While Basho's PHP client is a great starting point for using Riak, I found it la
       * `lib/riak_utils.php`
       * `lib/riak_bucket.php`
       * `lib/riak_mapreduce.php`
+  * refactored REST API-specific code into RiakBackendHTTP
 
 ### TODOs 
-  * refactor REST API-specific code into RiakBackendHTTP
   * implement PBC API backend in RiakBackendPBC
   * add multi-host support and connection management
   * reorganize `unit_tests.php` into a PHPUnit test suite
