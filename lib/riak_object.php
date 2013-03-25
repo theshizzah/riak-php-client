@@ -75,6 +75,10 @@ class RiakObject {
     return $this->headers['http_code'];
   }
 
+  public function setExists($exists){
+    $this->exists = $exists;
+  }
+
   /**
    * Return true if the object exists, false otherwise. Allows you to
    * detect a get(...) or getBinary(...) operation where the object is missing.
@@ -466,9 +470,7 @@ class RiakObject {
     # Do the request...
     $r = $this->bucket->getR($r);
     $params = array('r' => $r);
-    $url = RiakUtils::buildRestPath($this->client, $this->bucket, $this->key, NULL, $params);
-    $response = RiakUtils::httpRequest('GET', $url);
-    $this->populate($response, array(200, 300, 404));
+    $this->client->backend->reloadObject($this, $params);
     
     # If there are siblings, load the data for the first one by default...
     if ($this->hasSiblings()) {
@@ -491,11 +493,7 @@ class RiakObject {
 
     # Construct the URL...
     $params = array('dw' => $dw);
-    $url = RiakUtils::buildRestPath($this->client, $this->bucket, $this->key, NULL, $params);
-
-    # Run the operation...
-    $response = RiakUtils::httpRequest('DELETE', $url);    
-    $this->populate($response, array(204, 404));
+    $this->client->backend->deleteObject($this,$params);
 
     return $this;
   }
@@ -505,7 +503,7 @@ class RiakObject {
    * Reset this object.
    * @return $this
    */
-  private function clear() {
+  public function clear() {
       $this->headers = array();
       $this->links = array();
       $this->data = NULL;
@@ -529,6 +527,23 @@ class RiakObject {
     }
   }
 
+  public function addHeader($headerString){
+    $this->headers[] = $headerString; 
+    var_dump($this->headers);
+  }
+
+  public function setHeaders($headers){
+    $this->headers = $headers; 
+  }
+
+  public function jsonize(){
+    return $this->jsonize; 
+  }
+
+  public function headers(){
+    return $this->headers;
+  }
+
   /**
    * Get the autoindexes of this object.
    * @return string
@@ -536,7 +551,16 @@ class RiakObject {
   public function autoIndexes(){
     return $this->autoIndexes; 
   }
-  
+
+  public function setAutoIndexes($autoIndexes){
+    if(!is_array($autoIndexes)){
+      print "can't set autoIndexes to non-array value: ".print_r($autoIndexes)."\n"; 
+    }
+    else{
+      $this->autoIndexes = $autoIndexes; 
+    } 
+  }
+
   /**
    * Get the metadata of this object.
    * @return string
@@ -553,52 +577,7 @@ class RiakObject {
     return $this->indexes; 
   }
 
-  /**
-   * Given the output of RiakUtils::httpRequest and a list of
-   * statuses, populate the object. Only for use by the Riak client
-   * library.
-   * @return $this
-   */
-  function populate($response, $expected_statuses) {
-    $this->clear();
-
-    # If no response given, then return.    
-    if ($response == NULL) {
-      return $this;
-    }
-  
-    # Update the object...
-    $this->headers = $response[0];
-    $this->data = $response[1];
-    $status = $this->status();
-
-    # Check if the server is down (status==0)
-    if ($status == 0) {
-      $m = 'Could not contact Riak Server: http://' . $this->client->host . ':' . $this->client->port . '!';
-      throw new Exception($m);
-    }
-
-    # Verify that we got one of the expected statuses. Otherwise, throw an exception.
-    if (!in_array($status, $expected_statuses)) {
-      $m = 'Expected status ' . implode(' or ', $expected_statuses) . ', received ' . $status . ' with body: ' . $this->data;
-      throw new Exception($m);
-    }
-
-    # If 404 (Not Found), then clear the object.
-    if ($status == 404) {
-      $this->clear();
-      return $this;
-    } 
-      
-    # If we are here, then the object exists...
-    $this->exists = TRUE;
-
-    # Parse the link header...
-    if (array_key_exists("link", $this->headers)) {
-      $this->populateLinks($this->headers["link"]);
-    }
-
-    # Parse the index and metadata headers
+  public function updateIndexMetaFromHeaders(){
     $this->indexes = array();
     $this->autoIndexes = array();
     $this->meta = array();
@@ -616,54 +595,13 @@ class RiakObject {
         }
       }
     }
-
-    # If 300 (Siblings), then load the first sibling, and
-    # store the rest.
-    if ($status == 300) {
-      $siblings = explode("\n", trim($this->data));
-      array_shift($siblings); # Get rid of 'Siblings:' string.
-      $this->siblings = $siblings;
-      $this->exists = TRUE;
-      return $this;
-    }
-  
-    if ($status == 201) {
-      $path_parts = explode('/', $this->headers['location']);
-      $this->key = array_pop($path_parts);
-    }
-
-    # Possibly json_decode...
-    if (($status == 200 || $status == 201) && $this->jsonize) {
-      $this->data = json_decode($this->data, true);
-    }
-    
-    # Look for auto indexes and deindex explicit values if appropriate
-    if (isset($this->meta['x-rc-autoindex'])) {
-      # dereference the autoindexes
-      $this->autoIndexes = json_decode($this->meta['x-rc-autoindex'], true);
-      $collisions = isset($this->meta['x-rc-autoindexcollision']) ? json_decode($this->meta['x-rc-autoindexcollision'], true) : array();
-      
-      foreach($this->autoIndexes as $index=>$fieldName) {
-        $value = null;
-        if (isset($this->data[$fieldName])) {
-          $value = $this->data[$fieldName];
-          if (isset($collisions[$index]) && $collisions[$index] === $value) {
-            // Don't strip this value, it's an explicit index.
-          } else {
-            if ($value !== null) $this->removeIndex($index, null, $value);
-          }
-        }
-      }
-    }
-
-    return $this;
   }
 
   /**
    * Private.
    * @return $this
    */
-  private function populateLinks($linkHeaders) {
+  public function populateLinks($linkHeaders) {
     $linkHeaders = explode(",", trim($linkHeaders));
     foreach ($linkHeaders as $linkHeader) {
       $linkHeader = trim($linkHeader);
@@ -707,14 +645,12 @@ class RiakObject {
     # Run the request...
     $vtag = $this->siblings[$i];
     $params = array('r' => $r, 'vtag' => $vtag);
-    $url = RiakUtils::buildRestPath($this->client, $this->bucket, $this->key, NULL, $params);
-    $response = RiakUtils::httpRequest('GET', $url);
+    return $this->client->backend->getObjectSibling($this, $params); 
     
-    # Respond with a new object...
-    $obj = new RiakObject($this->client, $this->bucket, $this->key);
-    $obj->jsonize = $this->jsonize;
-    $obj->populate($response, array(200));
-    return $obj;
+  }
+
+  function setSiblings($siblings){
+      $this->siblings = $siblings;
   }
 
   /**

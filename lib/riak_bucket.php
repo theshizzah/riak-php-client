@@ -233,15 +233,13 @@ class RiakBucket {
    * @return array of RiakLinks
    */
   function indexSearch($indexName, $indexType, $startOrExact, $end=NULL, $dedupe=false) {
-    $url = RiakUtils::buildIndexPath($this->client, $this, "{$indexName}_{$indexType}", $startOrExact, $end);
-    $response = RiakUtils::httpRequest('GET', $url);
+    $obj = $this->client->backend->indexSearchOnBucket($this, $indexName, $indexType, $startOrExact, $end, $dedupe);
     
-    $obj = new RiakObject($this->client, $this, NULL);
-    $obj->populate($response, array(200));
     if (!$obj->exists()) {
       throw new Exception("Error searching index.");
     }
     $data = $obj->getData();
+
     $keys = array_map("urldecode",$data["keys"]);
     
     $seenKeys = array();

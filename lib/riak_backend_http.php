@@ -28,6 +28,117 @@ class RiakBackendHTTP implements RiakBackendInterface {
     return ($response != NULL) && ($response[1] == 'OK');
   }
 
+  function reloadObject($object, $params) {
+    # Do the request...
+    $url = self::buildRestPath($object->client, $object->bucket, $object->key, NULL, $params);
+    $response = self::httpRequest('GET', $url);
+    $object->client->backend->populateObject($object, $response, array(200, 300, 404));
+  }
+
+  /**
+   * Given the output of httpRequest and a list of
+   * statuses, populate the object. Only for use by the Riak client
+   * library.
+   * @return $this
+   */
+  function populateObject($object, $response, $expected_statuses) {
+    $object->clear();
+
+    # If no response given, then return.    
+    if ($response == NULL) {
+      return $object;
+    }
+  
+    # Update the object...
+    $object->setHeaders($response[0]);
+    $object->setData($response[1]);
+    $status = $object->status();
+
+    # Check if the server is down (status==0)
+    if ($status == 0) {
+      $m = 'Could not contact Riak Server: http://' . $object->client->host . ':' . $object->client->port . '!';
+      throw new Exception($m);
+    }
+
+    # Verify that we got one of the expected statuses. Otherwise, throw an exception.
+    if (!in_array($status, $expected_statuses)) {
+      $m = 'Expected status ' . implode(' or ', $expected_statuses) . ', received ' . $status . ' with body: ' . $this->data;
+      throw new Exception($m);
+    }
+
+    # If 404 (Not Found), then clear the object.
+    if ($status == 404) {
+      $object->clear();
+      return $object;
+    } 
+      
+    # If we are here, then the object exists...
+    $object->exists = TRUE;
+
+    # Parse the link header...
+    $headers = $object->headers();
+    if (array_key_exists("link", $object->headers())) {
+      $link = $headers["link"];
+      $object->populateLinks($link);
+    }
+
+    # Parse the index and metadata headers
+    $object->updateIndexMetaFromHeaders();
+
+    # If 300 (Siblings), then load the first sibling, and
+    # store the rest.
+    if ($status == 300) {
+      $siblings = explode("\n", trim($object->data));
+      array_shift($siblings); # Get rid of 'Siblings:' string.
+      $object->setSiblings($siblings);
+      $object->setExists(TRUE);
+      return $object;
+    }
+  
+    $headers = $object->headers();
+    if ($status == 201) {
+      $path_parts = explode('/', $headers['location']);
+      $object->key = array_pop($path_parts);
+    }
+
+    # Possibly json_decode...
+    if (($status == 200 || $status == 201) && $object->jsonize()) {
+      $object->data = json_decode($object->data, true);
+    }
+    
+    # Look for auto indexes and deindex explicit values if appropriate
+    $meta = $object->meta();
+
+    if (isset($meta['x-rc-autoindex'])) {
+      # dereference the autoindexes
+      $object->setAutoIndexes(json_decode($meta['x-rc-autoindex'], true));
+      $collisions = isset($meta['x-rc-autoindexcollision']) ? json_decode($meta['x-rc-autoindexcollision'], true) : array();
+
+      $data = $object->getData(); 
+      foreach($object->autoIndexes() as $index=>$fieldName) {
+        $value = null;
+        if (isset($data[$fieldName])) {
+          $value = $data[$fieldName];
+          if (isset($collisions[$index]) && $collisions[$index] === $value) {
+            // Don't strip this value, it's an explicit index.
+          } else {
+            if ($value !== null) $object->removeIndex($index, null, $value);
+          }
+        }
+      }
+    }
+
+    return $object;
+  }
+
+  function deleteObject($object, $params){
+    $url = self::buildRestPath($object->client, $object->bucket, $object->key, NULL, $params);
+
+    # Run the operation...
+    $response = self::httpRequest('DELETE', $url);    
+    $this->populateObject($object, $response, array(204, 404));
+  }
+
   # TODO, move logic around RiakObject back to riak.php, but get object contents via $backend
   function getBucketProps($bucket){
     # Run the request...
@@ -37,7 +148,7 @@ class RiakBackendHTTP implements RiakBackendInterface {
 
     # Use a RiakObject to interpret the response, we are just interested in the value.
     $obj = new RiakObject($this, $bucket, NULL);
-    $obj->populate($response, array(200));
+    $this->populateObject($obj, $response, array(200));
     if (!$obj->exists()) {
       throw new Exception("Error getting bucket properties.");
     }
@@ -74,7 +185,8 @@ class RiakBackendHTTP implements RiakBackendInterface {
 
     # Add the auto indexes...
     $collisions = array();
-    if(!empty($object->autoIndexes) && !is_array($object->data)) {
+    $autoIndexes = $object->autoIndexes();
+    if(count($autoIndexes) > 0 && !is_array($object->data)) {
       throw new Exception('Unsupported data type for auto indexing feature.  Object must be an array to use auto indexes.');
     }
     foreach($object->autoIndexes() as $index=>$fieldName) {
@@ -94,19 +206,17 @@ class RiakBackendHTTP implements RiakBackendInterface {
       }
     }
 
-    $meta = $object->meta();
     count($object->autoIndexes()) > 0
-      ? $meta['x-rc-autoindex'] = json_encode($object->autoIndexes())
-      : $meta['x-rc-autoindex'] = null;
+      ? $object->setMeta('x-rc-autoindex',json_encode($object->autoIndexes()))
+      : $object->setMeta('x-rc-autoindex',null);
     count($collisions) > 0
-      ? $meta['x-rc-autoindexcollision'] = json_encode($collisions)
-      : $meta['x-rc-autoindexcollision'] = null;
+      ? $object->setMeta('x-rc-autoindexcollision',json_encode($collisions))
+      : $object->setMeta('x-rc-autoindexcollision',null);
     
     # Add the indexes
     foreach ($object->indexes() as $index=>$values) {
       $headers[] = "x-riak-index-$index: " . join(', ', array_map('urlencode', $values));
     }
-    
     
     # Add the metadata...
     foreach($object->meta() as $metaName=>$metaValue) {
@@ -123,8 +233,28 @@ class RiakBackendHTTP implements RiakBackendInterface {
 
     # Run the operation.
     $response = self::httpRequest($method, $url, $headers, $content);
-    $object->populate($response, array(200, 201, 300));
+    $this->populateObject($object, $response, array(200, 201, 300));
     return $object;
+  }
+
+  public function indexSearchOnBucket($bucket, $indexName, $indexType, $startOrExact, $end, $dedupe){
+    $url = self::buildIndexPath($bucket->client, $bucket, "{$indexName}_{$indexType}", $startOrExact, $end);
+    $response = self::httpRequest('GET', $url);
+    
+    $obj = new RiakObject($bucket->client, $bucket, NULL);
+    $this->populateObject($obj, $response, array(200));
+    return $obj; 
+  }
+
+  public function getObjectSibling($object, $params){
+    $url = self::buildRestPath($object->client, $object->bucket, $object->key, NULL, $params);
+    $response = self::httpRequest('GET', $url);
+    
+    # Respond with a new object...
+    $obj = new RiakObject($object->client, $object->bucket, $object->key);
+    $obj->jsonize = $object->jsonize();
+    $this->populateObject($obj, $response, array(200));
+    return $obj;
   }
   
   /**
